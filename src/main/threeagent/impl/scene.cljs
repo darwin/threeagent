@@ -6,7 +6,7 @@
             ["three" :as three]
             [cljs.core :refer [exists?]]))
 
-(defonce ^:private contexts (array))
+(defonce ^:private contexts (atom {}))
 
 (deftype Context [^vscene/Scene virtualScene
                        ^vscene/Node sceneRoot
@@ -189,18 +189,29 @@
                                    clock renderer on-before-render-cb on-after-render-cb)]
         (set! (.-animateFn context) #(animate context))
         (init-scene context virtual-scene scene-root)
-        (.push contexts context)
         context)))
 
 (defn- remove-all-children! [^Context context ^vscene/Node vscene-root]
   (.for-each-child vscene-root (partial remove-node! context)))
 
-(defn- reset-context! [^Context context root-fn {:keys [on-before-render on-after-render]}]
-  (let [scene-root ^js (.-sceneRoot context)
-        virtual-scene ^vscene/Scene (.-virtualScene context)
-        new-virtual-scene (vscene/create root-fn)]
+(defn start-animation-loop! [context]
+  (let [renderer ^js (.-renderer context)]
+    (.setAnimationLoop renderer (.-animateFn context))))
+
+(defn stop-animation-loop! [context]
+  (let [renderer ^js (.-renderer context)
+        animation ^js (.-animation renderer)]
+    (.stop animation)))
+
+(defn clear-context! [^Context context]
+  (let [virtual-scene ^vscene/Scene (.-virtualScene context)]
     (remove-all-children! context (.-root virtual-scene))
-    (vscene/destroy! virtual-scene)
+    (vscene/destroy! virtual-scene)))
+
+(defn reset-context! [^Context context root-fn {:keys [on-before-render on-after-render]}]
+  (clear-context! context)
+  (let [scene-root ^js (.-sceneRoot context)
+        new-virtual-scene (vscene/create root-fn)]
     (set! (.-cameras context) (array))
     (init-scene context new-virtual-scene scene-root)
     (set! (.-virtualScene context) new-virtual-scene)
@@ -208,15 +219,33 @@
     (set! (.-afterRenderCb context) on-after-render)
     context))
 
-(defn- find-context [dom-root]
-  (first (filter #(= (.-domRoot %) dom-root) contexts)))
+(defn- find-context [context-id]
+  (get @contexts context-id))
+
+(defn register-context! [context-id context]
+  (swap! contexts assoc context-id context))
+
+(defn unregister-context! [context-id]
+  (swap! contexts dissoc context-id))
+
+(defn dispose-context! [context]
+  (let [renderer ^js (.-renderer context)]
+    (.dispose renderer)))
+
+(defn destroy-context! [context-id]
+  (if-some [context (find-context context-id)]
+    (do
+      (clear-context! context)
+      (dispose-context! context)
+      (unregister-context! context-id))))
 
 (defn ^Context render [root-fn
-                            dom-root
-                            {:keys [on-before-render on-after-render] :as config}]
-  (if-let [existing-context (find-context dom-root)]
-    (reset-context! existing-context root-fn config)
-    (let [context (create-context root-fn dom-root on-before-render on-after-render)
-          renderer ^js (.-renderer context)]
-      (.setAnimationLoop renderer (.-animateFn context))
-      context)))
+                       dom-root
+                       {:keys [on-before-render on-after-render context-id] :as config}]
+  (let [effective-context-id (or context-id dom-root)]
+    (if-let [existing-context (find-context effective-context-id)]
+      (reset-context! existing-context root-fn config)
+      (let [context (create-context root-fn dom-root on-before-render on-after-render)]
+        (register-context! effective-context-id context)
+        (start-animation-loop! context)
+        context))))

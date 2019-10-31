@@ -11,3 +11,6 @@
   ([root-fn dom-root] (render root-fn dom-root {}))
   ([root-fn dom-root opts] (scene/render root-fn dom-root opts)))
 
+(defn destroy-context! [context-id]
+  (scene/destroy-context! context-id))
+
